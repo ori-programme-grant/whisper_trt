@@ -42,8 +42,7 @@ def find_respeaker_audio_device_index():
     for i in range(num_devices):
 
         device_info = p.get_device_info_by_host_api_device_index(0, i)
-        
-        if "respeaker" in device_info.get("name").lower():
+        if "3dsa" in device_info.get("name").lower():
 
             device_index = i
 
@@ -82,7 +81,7 @@ def get_respeaker_audio_stream(
 
 
 def audio_numpy_from_bytes(audio_bytes: bytes):
-    audio = np.fromstring(audio_bytes, dtype=np.int16)
+    audio = np.frombuffer(audio_bytes, dtype=np.int16)
     return audio
 
 
@@ -115,8 +114,8 @@ class Microphone(Process):
                  chunk_size: int = 1536, 
                  device_index: int | None = None,
                  use_channel: int = 0, 
-                 num_channels: int = 6,
-                 sample_rate: int = 16000):
+                 num_channels: int = 1,
+                 sample_rate: int = 44100):
         super().__init__()
         self.output_queue = output_queue
         self.chunk_size = chunk_size
@@ -130,7 +129,7 @@ class Microphone(Process):
                                         device_index=self.device_index, 
                                         channels=self.num_channels) as stream:
             while True:
-                audio_raw = stream.read(self.chunk_size)
+                audio_raw = stream.read(self.chunk_size, exception_on_overflow=False)
                 audio_numpy = audio_numpy_from_bytes(audio_raw)
                 audio_numpy = np.stack([audio_numpy_slice_channel(audio_numpy, i, self.num_channels) for i in range(self.num_channels)])
                 audio_numpy_normalized = audio_numpy_normalize(audio_numpy)
