@@ -19,11 +19,13 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-
+import random
+import time
 import numpy as np
 import time
 import pyaudio
 from multiprocessing import Process, Queue, Event
+from queue import Empty, Full
 from collections import deque
 from dataclasses import dataclass
 from contextlib import contextmanager
@@ -36,15 +38,17 @@ def find_respeaker_audio_device_index():
 
     p = pyaudio.PyAudio()
 
-    info = p.get_host_api_info_by_index(0)
-    num_devices = info.get("deviceCount")
+    num_attempts = 4
+    for i in range(0, num_attempts):
+        info = p.get_host_api_info_by_index(0)
+        num_devices = info.get("deviceCount")
+        for i in range(num_devices):
 
-    for i in range(num_devices):
+            device_info = p.get_device_info_by_host_api_device_index(0, i)
+            if "3dsa" in device_info.get("name").lower():
 
-        device_info = p.get_device_info_by_host_api_device_index(0, i)
-        if "3dsa" in device_info.get("name").lower():
-
-            device_index = i
+                device_index = i
+                break
 
     return device_index
 
@@ -111,11 +115,11 @@ class Microphone(Process):
 
     def __init__(self, 
                  output_queue: Queue, 
-                 chunk_size: int = 1536, 
+                 chunk_size: int = 8192, 
                  device_index: int | None = None,
                  use_channel: int = 0, 
                  num_channels: int = 1,
-                 sample_rate: int = 44100):
+                 sample_rate: int = 48000):
         super().__init__()
         self.output_queue = output_queue
         self.chunk_size = chunk_size
@@ -129,17 +133,17 @@ class Microphone(Process):
                                         device_index=self.device_index, 
                                         channels=self.num_channels) as stream:
             while True:
+                #print(random.randint(1, 10), "microphone")
                 audio_raw = stream.read(self.chunk_size, exception_on_overflow=False)
                 audio_numpy = audio_numpy_from_bytes(audio_raw)
                 audio_numpy = np.stack([audio_numpy_slice_channel(audio_numpy, i, self.num_channels) for i in range(self.num_channels)])
                 audio_numpy_normalized = audio_numpy_normalize(audio_numpy)
-
                 audio = AudioChunk(
                     audio_raw=audio_raw,
                     audio_numpy=audio_numpy,
                     audio_numpy_normalized=audio_numpy_normalized
                 )
-
+                #print(random.randint(1, 10), "microphone after")
                 self.output_queue.put(audio)
 
 
@@ -148,7 +152,7 @@ class VAD(Process):
     def __init__(self,
             input_queue: Queue, 
             output_queue: Queue,
-            sample_rate: int = 16000,
+            sample_rate: int = 48000,
             use_channel: int = 0,
             speech_threshold: float = 0.5,
             max_filter_window: int = 1,
@@ -185,8 +189,10 @@ class VAD(Process):
 
         while True:
             
-
-            audio_chunk = self.input_queue.get()
+            try:
+                audio_chunk = self.input_queue.get(block=False)
+            except Empty:
+                continue
 
             voice_prob = float(vad(audio_chunk.audio_numpy_normalized[self.use_channel], sr=self.sample_rate).flatten()[0])
 
@@ -200,6 +206,7 @@ class VAD(Process):
             max_filter_window.append(chunk)
 
             is_voice = any(c.voice_prob > self.speech_threshold for c in max_filter_window)
+            #print("Is voice", is_voice)
             
             if is_voice > prev_is_voice:
                 speech_chunks = [chunk for chunk in max_filter_window]
@@ -259,7 +266,10 @@ class ASR(Process):
 
         while True:
 
-            speech_segment = self.input_queue.get()
+            try:
+                speech_segment = self.input_queue.get(block=False)
+            except Empty:
+                continue
 
             t0 = time.perf_counter_ns()
             audio = np.concatenate([chunk.audio_numpy_normalized[self.use_channel] for chunk in speech_segment.chunks])
@@ -307,7 +317,8 @@ if __name__ == "__main__":
 
     asr = ASR(args.model, args.backend, speech_segments, ready_flag=asr_ready)
 
-    vad = VAD(audio_chunks, speech_segments, max_filter_window=5, ready_flag=vad_ready, speech_start_flag=speech_start, speech_end_flag=speech_end)
+    vad = VAD(audio_chunks, speech_segments, max_filter_window=5, ready_flag=vad_ready, speech_start_flag=speech_start, speech_end_flag=speech_end,
+              speech_threshold=0.3)
 
     mic = Microphone(audio_chunks)
     mon = StartEndMonitor(speech_start, speech_end)
