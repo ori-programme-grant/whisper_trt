@@ -20,6 +20,7 @@
 # DEALINGS IN THE SOFTWARE.
 
 import random
+import wave
 import time
 import numpy as np
 import time
@@ -38,7 +39,7 @@ def find_respeaker_audio_device_index():
 
     p = pyaudio.PyAudio()
 
-    num_attempts = 4
+    num_attempts = 10
     for i in range(0, num_attempts):
         info = p.get_host_api_info_by_index(0)
         num_devices = info.get("deviceCount")
@@ -49,6 +50,8 @@ def find_respeaker_audio_device_index():
 
                 device_index = i
                 break
+        
+        time.sleep(0.5)
 
     return device_index
 
@@ -133,7 +136,7 @@ class Microphone(Process):
                                         device_index=self.device_index, 
                                         channels=self.num_channels) as stream:
             while True:
-                #print(random.randint(1, 10), "microphone")
+
                 audio_raw = stream.read(self.chunk_size, exception_on_overflow=False)
                 audio_numpy = audio_numpy_from_bytes(audio_raw)
                 audio_numpy = np.stack([audio_numpy_slice_channel(audio_numpy, i, self.num_channels) for i in range(self.num_channels)])
@@ -143,7 +146,7 @@ class Microphone(Process):
                     audio_numpy=audio_numpy,
                     audio_numpy_normalized=audio_numpy_normalized
                 )
-                #print(random.randint(1, 10), "microphone after")
+
                 self.output_queue.put(audio)
 
 
@@ -175,7 +178,7 @@ class VAD(Process):
         vad = load_vad()
         
         # warmup run
-        vad(np.zeros(1536, dtype=np.float32), sr=self.sample_rate)
+        vad(np.zeros(8192, dtype=np.float32), sr=self.sample_rate)
         
 
         max_filter_window = deque(maxlen=self.max_filter_window)
@@ -195,7 +198,6 @@ class VAD(Process):
                 continue
 
             voice_prob = float(vad(audio_chunk.audio_numpy_normalized[self.use_channel], sr=self.sample_rate).flatten()[0])
-
             chunk = AudioChunk(
                 audio_raw=audio_chunk.audio_raw,
                 audio_numpy=audio_chunk.audio_numpy,
@@ -206,12 +208,10 @@ class VAD(Process):
             max_filter_window.append(chunk)
 
             is_voice = any(c.voice_prob > self.speech_threshold for c in max_filter_window)
-            #print("Is voice", is_voice)
             
             if is_voice > prev_is_voice:
                 speech_chunks = [chunk for chunk in max_filter_window]
                 # start voice
-                speech_chunks.append(chunk)
                 if self.speech_start_flag is not None:
                     self.speech_start_flag.set()
             elif is_voice < prev_is_voice:
@@ -259,7 +259,7 @@ class ASR(Process):
             model = FasterWhisperWrapper(WhisperModel(self.model))
 
         # warmup
-        model.transcribe(np.zeros(1536, dtype=np.float32))
+        model.transcribe(np.zeros(8192, dtype=np.float32))
 
         if self.ready_flag is not None:
             self.ready_flag.set()
@@ -272,9 +272,25 @@ class ASR(Process):
                 continue
 
             t0 = time.perf_counter_ns()
-            audio = np.concatenate([chunk.audio_numpy_normalized[self.use_channel] for chunk in speech_segment.chunks])
 
-            text = model.transcribe(audio)['text']
+            # audio = np.concatenate([chunk.audio_numpy_normalized[self.use_channel] for chunk in speech_segment.chunks])
+            # text = model.transcribe(audio)['text']
+            # print("Audio chunks for transcription", len(speech_segment.chunks))
+
+            frames = []
+            for chunk in speech_segment.chunks:
+                frames.append(chunk.audio_raw)
+
+            # Save to WAV file
+            filename = "output.wav"
+            wf = wave.open(filename, "wb")
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(48000)
+            wf.writeframes(b"".join(frames))
+            wf.close()
+
+            text = model.transcribe(filename)['text']
 
             t1 = time.perf_counter_ns()
 
