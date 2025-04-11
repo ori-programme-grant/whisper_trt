@@ -147,7 +147,10 @@ class Microphone(Process):
                     audio_numpy_normalized=audio_numpy_normalized
                 )
 
-                self.output_queue.put(audio)
+                try:
+                    self.output_queue.put(audio, block=False)
+                except Full:
+                    continue
 
 
 class VAD(Process):
@@ -275,13 +278,11 @@ class ASR(Process):
 
             # audio = np.concatenate([chunk.audio_numpy_normalized[self.use_channel] for chunk in speech_segment.chunks])
             # text = model.transcribe(audio)['text']
-            # print("Audio chunks for transcription", len(speech_segment.chunks))
 
             frames = []
             for chunk in speech_segment.chunks:
                 frames.append(chunk.audio_raw)
 
-            # Save to WAV file
             filename = "output.wav"
             wf = wave.open(filename, "wb")
             wf.setnchannels(1)
@@ -289,7 +290,6 @@ class ASR(Process):
             wf.setframerate(48000)
             wf.writeframes(b"".join(frames))
             wf.close()
-
             text = model.transcribe(filename)['text']
 
             t1 = time.perf_counter_ns()
